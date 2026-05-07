@@ -2,40 +2,78 @@ import gymnasium as gym
 import torch
 import numpy as np
 from dqn_agent import Agent
+from gymnasium.wrappers import GrayscaleObservation, FrameStackObservation, ResizeObservation
 
-agent = Agent(state_size=8, action_size=4, seed=0)
+N_ATOMS=51
 
-weights = torch.load('best_model.pth', weights_only=True)
+class SkipFrame(gym.Wrapper):
+    def __init__(self, env, skip=4):
+        super().__init__(env)
+        self._skip = skip
+
+    def step(self, action):
+        total_reward = 0.0
+        terminated = False
+        truncated = False
+        for _ in range(self._skip):
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            total_reward += reward
+            if terminated or truncated:
+                break
+        return obs, total_reward, terminated, truncated, info
+
+
+class CropObservation(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        shape = self.observation_space.shape
+        self.observation_space = gym.spaces.Box(
+            low=0, high=255,
+            shape=(shape[0] - 12, shape[1], shape[2]),
+            dtype=self.observation_space.dtype
+        )
+
+    def observation(self, observation):
+        return observation[:-12, :, :]
+
+
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+env = gym.make('CarRacing-v3', continuous=False, render_mode='human')
+env = SkipFrame(env)
+env = CropObservation(env)
+env = GrayscaleObservation(env)
+env = ResizeObservation(env, (84, 84))
+env = FrameStackObservation(env, 4)
+state_size = env.observation_space.shape
+action_size = env.action_space.n
+
+agent = Agent(state_size=state_size, action_size=action_size,
+              n_atoms=N_ATOMS, seed=1)
+
+weights = torch.load('/Users/vladharcenko/Desktop/ML/РСК/task5/rainbow_weights',
+                     map_location=device, weights_only=True)
 agent.qnetwork_local.load_state_dict(weights)
 
 agent.qnetwork_local.eval()
 
-num_episodes = 100
+num_episodes = 5
 scores = []
 
-env = gym.make('LunarLander-v3')
 
 for i in range(1, num_episodes + 1):
-    
-    if i == num_episodes:
-        env.close() 
-        env = gym.make('LunarLander-v3', render_mode='human')
-
     state, _ = env.reset()
     score = 0
     done = False
-    
+
     while not done:
         action = agent.act(state, is_eval=True)
-        
+
         state, reward, terminated, truncated, _ = env.step(action)
         score += reward
         done = terminated or truncated
-        
+
     scores.append(score)
-    
-    if i % 10 == 0 and i != num_episodes:
-        print(f"{i}/{num_episodes} episode. Mean score {np.mean(scores):.2f}")
+    print(f"{i}/{num_episodes} episode. Score {score:.2f}")
 
 env.close()
 
